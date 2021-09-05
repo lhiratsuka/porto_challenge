@@ -1,0 +1,172 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Packages
+```{r message=FALSE}
+library(tidyverse)
+library(funModeling)
+library(caret)
+library(ranger)
+library(MLmetrics)
+```
+
+# Prep_data
+```{r}
+train <- read.csv("../data/train.csv")
+test <- read.csv("../data/test.csv")
+meta <- read.csv("../data/metadata.csv")
+```
+
+```{r}
+prep_data <- function(x, test=F){
+  #x <- x %>% mutate_all(~ifelse(.x == -999, NA_real_, .x))
+  
+  for(j in 1:nrow(meta)){
+    
+    if(str_detect(meta[j, 2], "^Qualitativo")){
+      
+      if(str_detect(meta[j, 2], "Qualitativo ordinal")){
+        x[,j] <- factor(x %>% pull(j), ordered=T)
+      }else if(str_detect(meta[j, 2], "Qualitativo nominal")){
+        x[,j] <- as.factor(x %>% pull(j))
+      }   
+    }
+  }
+
+  
+  return(x)
+}
+
+train <- prep_data(train)
+train$y <- factor(train$y)
+```
+
+
+```{r}
+feature_selection <- read.csv2("../output/feature_selection.csv")
+top10 <-  feature_selection %>% arrange(ranking) %>% head(10)
+top10 <- top10[,1]
+```
+
+# Base de treino com top 10
+```{r}
+train_10 <- train[,c(top10,'y')]
+
+
+```
+
+# Missing
+```{r}
+library(visdat)
+vis_miss(train[,top10])
+```
+```{r}
+top10
+```
+
+# Var4 
+
+```{r histogram var4}
+ggplot(train_10, aes(x = as.numeric(var4), fill = y)) +
+  geom_histogram()
+```
+
+Tentativa de agrupamento usando kmeans com 3 clusters
+```{r}
+gvar4_kmeans <- auto_grouping(data=train_10, input='var4', target="y",n_groups=3)
+
+gvar4_kmeans$recateg_results
+
+```
+O auto grouping com kmeans identifica apenas 3 grupos que ficam mal distribuídos, então tentaremos o hclust
+```{r}
+gvar4_hclust <-  auto_grouping(data=train_10, input='var4', target="y", n_groups=10, model = "hclust")
+
+gvar4_hclust$recateg_results
+```
+
+
+
+Continuamoss sem conseguir separar os 13.117 clientes, então ficaremos com o primeiro agrupamento.
+```{r}
+gvar4_kmeans <- gvar4_kmeans$df_equivalence
+gvar4_kmeans <- gvar4_kmeans %>% mutate_if(is.character, as.factor)
+train_var4 <- train_10 %>% 
+  left_join(gvar4_kmeans, by = "var4")
+
+```
+
+
+
+
+Testar F1: numérico, fator bruto, fator agrupado
+```{r}
+index <- createDataPartition(train_var4$y, p = 0.7, list = FALSE)
+treino <- train_var4[index,]# %>% filter(!is.na(var4))
+validacao <- train_var4[-index,]# %>% filter(!is.na(var4))
+```
+
+```{r}
+set.seed(111)
+model <- ranger(y ~ var4, treino)
+y_pred <- predict(model, validacao)$predictions
+F1_Score(validacao$y, y_pred)
+```
+```{r}
+set.seed(111)
+model <- ranger(y ~ var4_rec, treino)
+y_pred <- predict(model, validacao)$predictions
+F1_Score(validacao$y, y_pred)
+```
+Melho trabalhar com 3 categorias da v4
+
+# Var8 
+
+```{r histogram var4}
+ggplot(train_10, aes(x = as.numeric(var8), fill = y)) +
+  geom_histogram()
+```
+
+Tentativa de agrupamento usando kmeans
+```{r}
+g_kmeans <- auto_grouping(data=train_10, input='var8', target="y",n_groups=5)
+
+g_kmeans$recateg_results
+
+```
+
+
+```{r}
+kmeans <- g_kmeans$df_equivalence %>% mutate_if(is.character, as.factor)
+colnames(kmeans)[2] <- "var_kmeans"
+
+train_categ <- train_10 %>% 
+  left_join(kmeans, by = "var8") 
+
+
+```
+
+
+Testar F1: numérico, fator bruto, fator agrupado
+```{r}
+index <- createDataPartition(train_categ$y, p = 0.7, list = FALSE)
+treino <- train_categ[index,]# %>% filter(!is.na(var4))
+validacao <- train_categ[-index,]# %>% filter(!is.na(var4))
+```
+
+## Teste categ bruta
+```{r}
+set.seed(111)
+model <- ranger(y ~ var8, treino)
+y_pred <- predict(model, validacao)$predictions
+F1_Score(validacao$y, y_pred)
+```
+## Teste kmeans
+```{r}
+set.seed(111)
+model <- ranger(y ~ var_kmeans, treino)
+y_pred <- predict(model, validacao)$predictions
+F1_Score(validacao$y, y_pred)
+```

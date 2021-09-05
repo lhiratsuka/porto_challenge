@@ -1,0 +1,108 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(DataExplorer)
+```
+
+```{r}
+train <- read.csv("../data/train.csv")
+test <- read.csv("../data/test.csv")
+meta <- read.csv("../data/metadata.csv")
+```
+
+```{r}
+prep_data <- function(x, test=F){
+  for(j in 1:nrow(meta)){
+    
+    if(str_detect(meta[j, 2], "^Qualitativo")){
+      
+      if(str_detect(meta[j, 2], "Qualitativo ordinal")){
+        x[,j] <- factor(x %>% pull(j), ordered=T)
+      }else if(str_detect(meta[j, 2], "Qualitativo nominal")){
+        x[,j] <- as.factor(x %>% pull(j))
+      }   
+    }
+  }
+  if(test==F){
+    x$y = as.factor(x$y)
+  }
+  
+  return(x)
+}
+
+train <- prep_data(train)
+```
+
+```{r}
+num_features <- train %>% select_if(is.numeric) %>% colnames()
+cat_features <- train %>% select_if(is.factor) %>% select(-id) %>% colnames()
+```
+
+# Análise instrodutória
+```{r}
+plot_intro(train)
+```
+Não tem missing explicíto, mas há missing especial
+```{r}
+missing_999_num <- train %>% select_if(is.numeric) %>% select(where(~any(.==-999))) %>% colnames()
+missing_999_num
+```
+
+```{r}
+missing_999_cat <- train %>% select_if(is.factor) %>% select(where(~any(. == -999))) %>% colnames()
+missing_999_cat
+```
+
+# Variáveis categóricas
+```{r}
+plot_bar(train, nrow =2, ncol = 4)
+```
+id: 14123 categories
+var2: 85 categories
+var3: 2443 categories
+var4: 13094 categories
+var5: 6296 categories
+var6: 1779 categories
+var10: 61 categories
+var11: 12384 categories
+var12: 5270 categories
+var13: 1499 categories
+var15: 77 categories
+var16: 77 categories
+var19: 1201 categories
+var21: 1534 categories
+var34: 69 categories
+var35: 567 categories
+
+```{r}
+train %>% group_by(var4) %>% count() %>% arrange(desc(n))
+train %>% filter(var4 != -999) %>% 
+ggplot(aes(var4, fill = y)) +
+  geom_bar()
+```
+```{r}
+train %>% filter(var4 != -999) %>% 
+ggplot(aes(factor(y), as.numeric(var4))) +
+  geom_boxplot()
+```
+
+```{r}
+train %>% select_if(is.factor) %>% 
+  map_dbl(~length(unique(.x)))
+
+```
+
+# VAriáveis numéricas
+```{r}
+plot_histogram(train)
+```
+
+```{r}
+plot_boxplot(train, by = "y")
+```
+

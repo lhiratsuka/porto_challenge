@@ -1,0 +1,40 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Treino e teste
+```{r}
+split <- initial_split(train, strata = y)
+treino <- training(split) %>% select(-id)
+teste <- testing(split)
+```
+
+
+# Bootstrap
+```{r}
+train_boot <- bootstraps(treino)
+train_boot
+```
+
+# Engine do Modelo
+```{r}
+modelo_rf <- rand_forest() %>% 
+  set_mode("classification") %>% 
+  set_engine("ranger")
+```
+
+# Workflow do Modelo
+```{r}
+train_workflow <- workflow() %>% 
+  add_formula(y ~.)
+```
+
+# Fit
+```{r}
+train_fit <- train_workflow %>% 
+  add_model(modelo_rf) %>% 
+  fit_resamples(resamples = train_boot,
+                control = control_resamples(save_pred = TRUE))
+```
+

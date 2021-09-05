@@ -1,0 +1,109 @@
+---
+title: "R Notebook"
+output: html_notebook
+
+---
+
+```{r}
+library(funModeling)
+library(tidyverse)
+options(scipen = 999)
+```
+
+# Import 
+```{r}
+train <- read.csv("data/train.csv")
+test <- read.csv("data/test.csv")
+train$y <- factor(train$y)
+```
+
+# Status
+```{r}
+# FunModeling
+
+train_na <- train %>% mutate_all(~ifelse(.x == -999, NA_real_, .x)) 
+test_na <- test %>% mutate_all(~ifelse(.x == -999, NA_real_, .x))
+
+```
+
+
+Treino e teste são parecidas
+```{r}
+status(train_na)
+```
+```{r}
+status(test_na)
+```
+# Var rank info
+```{r}
+var_rank_info(train_na, "y")
+```
+# Plot var x target
+```{r}
+vars_1 <- colnames(test %>% select(-id))
+cross_plot(data=train, input=vars_1, target="y")
+```
+
+# Discretize
+```{r}
+d_bins <- discretize_get_bins(data=train_na, input=vars_1, n_bins=10)
+train_cat <- discretize_df(data=train_na, data_bins=d_bins, stringsAsFactors=T)
+
+d_bins2 <- discretize_get_bins(data=test_na, input=vars_1, n_bins=10)
+test_cat <- discretize_df(data=test_na, data_bins=d_bins2, stringsAsFactors=T)
+```
+
+```{r}
+train_cat <- train_cat %>% mutate_all(~ifelse(is.na(.x), -999, .x)) 
+test_cat <- test_cat %>% mutate_all(~ifelse(is.na(.x), -999, .x))
+```
+
+# CV
+```{r}
+myFolds <- createFolds(train$y, k = 5)
+trControl <- trainControl(
+  method = "cv",
+  number = 5,
+  index = myFolds
+)
+```
+
+
+# Ranger
+```{r}
+model_ranger <- train(factor(y) ~.,
+                      data = train_cat %>% select(-id),
+                      method = "ranger",
+                      metric = "Accuracy",
+                      importance = 'permutation',
+                      trControl = trControl,
+                      tuneLength = 3)
+
+
+mean(model_ranger$resample$Accuracy)
+
+
+```
+
+```{r}
+# Submit
+submit <- test_cat %>% 
+  mutate(predicted = predict(model_ranger,test_cat)) %>% 
+  select(id,predicted)
+
+head(submit)
+write.csv(submit, "output/ranger_binning.csv", row.names = FALSE)
+```
+# Discretize by gain ratio 
+```{r}
+count_level <- read.csv("output/count_level.csv")
+maior10 <- function(x) {x > 10}
+
+levels_final <-  count_level %>% select_if(menor10) %>% select(-y)
+levels_final <- colnames(levels_final)
+
+
+
+train %>% mutate_if(is.numeric, ~discretize_rgr(.x, train$y, max_n_bins = 10))
+```
+

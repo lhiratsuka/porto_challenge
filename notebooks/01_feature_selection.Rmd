@@ -1,0 +1,435 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r warning=FALSE, message=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(caret)
+library(MLmetrics)
+library(mice)
+library(ranger)
+library(Amelia)
+library(Boruta)
+options(scipen=999)
+```
+
+```{r}
+train <- read.csv("../data/train.csv")
+test <- read.csv("../data/test.csv")
+meta <- read.csv("../data/metadata.csv")
+```
+
+```{r}
+prep_data <- function(x, test=F){
+  #x <- x %>% mutate_all(~ifelse(.x == -999, NA_real_, .x))
+  
+  for(j in 1:nrow(meta)){
+    
+    if(str_detect(meta[j, 2], "^Qualitativo")){
+      
+      if(str_detect(meta[j, 2], "Qualitativo ordinal")){
+        x[,j] <- factor(x %>% pull(j), ordered=T)
+      }else if(str_detect(meta[j, 2], "Qualitativo nominal")){
+        x[,j] <- as.factor(x %>% pull(j))
+      }   
+    }
+  }
+
+  
+  return(x)
+}
+
+train <- prep_data(train)
+```
+
+```{r}
+paste("Nº features originais", ncol(train)-2)
+```
+
+# Remove features com baixa variância
+```{r remove nzv}
+remove_cols <- nearZeroVar(train, names = TRUE)
+remove_cols
+```
+
+
+```{r cols finais pelo nvz}
+total_cols <- colnames(train)
+final_cols_nvz <- setdiff(total_cols, remove_cols)
+train <- train[, final_cols_nvz]
+
+paste("Nº features pós NVZ", ncol(train)-2)
+```
+
+
+# Seleciona features por ranger
+
+```{r}
+train$y <- factor(train$y)
+levels(train$y) <- c("first_class", "second_class")
+```
+
+```{r}
+set.seed(231192)
+model_ranger <- ranger(y ~.,
+                      data = train %>% select(-id),
+                      importance = "permutation")
+
+iv <- model_ranger$variable.importance
+
+iv <- data.frame(vars = names(iv), importance = model_ranger$variable.importance * 1000, row.names = NULL)
+
+iv <- iv %>% left_join(meta, by = c("vars" = "Variavel.cod"))
+
+iv %>% arrange(desc(importance))
+```
+
+```{r}
+set.seed(231192)
+model_ranger <- ranger(y ~.,
+                      data = train %>% select(-c(id,var3,var4,var5,var6)),
+                      importance = "permutation")
+
+iv <- model_ranger$variable.importance
+
+iv <- data.frame(vars = names(iv), importance = model_ranger$variable.importance * 1000, row.names = NULL)
+
+iv <- iv %>% left_join(meta, by = c("vars" = "Variavel.cod"))
+
+iv %>% arrange(desc(importance))
+```
+
+```{r}
+total_cols <- colnames(train)
+remove_cols_ranger <- iv %>% filter(importance < 0)
+remove_cols_ranger <- remove_cols_ranger[,1]
+final_cols_ranger <- setdiff(total_cols, remove_cols_ranger)
+train <- train[, final_cols_ranger]
+
+paste("Nº features pós ranger", ncol(train)-2)
+
+```
+
+
+
+# Modelo baseline
+Ranger sem variáveis eliminadas
+```{r submit 00}
+model_00 <- ranger(y ~.,
+                      data = train %>% select(-id),
+                   seed = 231192
+                   )
+```
+
+```{r}
+test$predicted <- predict(model_00, test, type = "response")$predictions
+
+levels(test$predicted) <- c("0", "1")
+
+test <- test %>% 
+  transmute(id, 
+            predicted = if_else(predicted == "first_class",0,1))
+
+write.csv(test,"../submit/test_00.csv", row.names = FALSE)
+```
+
+
+Testa 10 mais importantes
+```{r submit 02}
+model <- ranger(y ~ var4 + var8 + var7+ var6 + var54 + var20 + var14 + var11 + var52,
+                      data = train %>% select(-id),
+                   seed = 231192
+                   )
+```
+
+```{r}
+test$predicted <- predict(model, test, type = "response")$predictions
+
+levels(test$predicted) <- c("0", "1")
+
+test <- test %>% 
+  transmute(id, 
+            predicted = if_else(predicted == "first_class",0,1))
+
+write.csv(test,"../submit/test_01.csv", row.names = FALSE)
+```
+
+Testa 10 mais importantes transformando em numérica
+```{r submit 03}
+train <- read.csv("../data/train.csv")
+train <- train %>% 
+  transmute(var4,
+         var8 = as.factor(var8),
+         var7 = factor(var7),
+         var6,
+         var54,
+         var20 = factor(var20),
+         var14 = factor(var14),
+         var11,
+         var52,
+         y
+         )
+model <- ranger(y ~.,
+                      data = train,
+                   seed = 231192
+                   )
+```
+
+```{r}
+test <- read.csv("../data/test.csv")
+test$predicted <- predict(model, test, type = "response")$predictions
+
+levels(test$predicted) <- c("0", "1")
+
+test <- test %>% 
+  transmute(id, 
+            predicted = if_else(predicted == "first_class",0,1))
+
+write.csv(test,"../submit/test_02.csv", row.names = FALSE)
+```
+
+# Selecao Boruta v1      
+
+
+```{r}
+library(Boruta)
+set.seed(111)
+train_boruta <- Boruta(y~., data = train, doTrace = 2)
+```
+
+```{r}
+iv <- data.frame(attStats(train_boruta))
+iv <- tibble::rownames_to_column(iv, "var")
+
+iv %>% arrange(desc(meanImp)) %>%  head()
+
+write.csv2(iv, "../output/iv_boruta.csv", row.names = FALSE, na = "")
+```
+
+# Selecao Boruta v2
+```{r}
+many_levels <- c('var2','var3','var4','var5','var6','var10','var11','var12','var13','var15', 'var16','var19','var21','var34', 'var35')
+
+train2 <- train %>% 
+  mutate_at(many_levels, as.numeric)
+
+cut2 <- function(x) {
+  cut(x, breaks = 10)
+}
+
+train2 <-  train2 %>% 
+  mutate_at(many_levels, cut2) %>% 
+  mutate(y = factor(y))
+```
+
+
+```{r}
+set.seed(111)
+train_boruta2 <- Boruta(y~., data = train2, doTrace = 0)
+```
+
+```{r}
+imp_boruta <- data.frame(attStats(train_boruta2))
+imp_boruta <- tibble::rownames_to_column(imp_boruta, "var")
+
+imp_boruta %>% arrange(desc(meanImp)) %>%  head(10)
+
+write.csv2(imp_boruta, "../output/iv2_boruta.csv", row.names = FALSE, na = "")
+```
+
+```{r}
+boruta_signif <- getSelectedAttributes(train_boruta2, withTentative = FALSE)
+boruta_signif
+```
+
+```{r}
+plot(train_boruta2, cex.axis=.7, las=2, xlab="", main="Variable Importance")
+```
+
+
+Var4
+var5
+var6
+var11
+var12
+var13
+var19
+var21
+
+# CV
+```{r}
+set.seed(231192)
+myFolds <- createFolds(train2$y, k = 3)
+control=trainControl(method = "cv",number=3, index = myFolds)
+```
+
+
+# Seleção RandomForest
+```{r}
+set.seed(111)
+train_ranger <- ranger(factor(y) ~ ., 
+                      data = train2 %>% select(-id), 
+                      importance = "permutation",
+                      respect.unordered.factors = "ignore")
+
+```
+
+```{r}
+
+rangerImp <- data.frame(ranger_imp = train_ranger$variable.importance)
+rangerImp <- tibble::rownames_to_column(rangerImp, "var")
+rangerImp %>% arrange(desc(ranger_imp)) %>%  head(10)
+write.csv2(rangerImp, "../output/iv_ranger.csv", row.names = FALSE, na = "")
+```
+
+
+
+# Seleção IV
+```{r}
+train_cat <- train2 %>% 
+  mutate(y = factor(y)) %>% 
+
+  mutate_if(is.numeric,cut2)
+```
+
+```{r}
+library(InformationValue)
+
+# Choose Categorical Variables to compute Info Value.
+cat_vars <- colnames(train_cat %>% select(-id,-y))
+
+# Init Output
+df_iv <- data.frame(var=cat_vars, iv=numeric(length(cat_vars)))  # init output dataframe
+
+# Get Information Value for each variable
+for (factor_var in cat_vars){
+  df_iv[df_iv$var == factor_var, "iv"] <- IV(X=train_cat[, factor_var], Y=train_cat$y)
+}
+
+write.csv2(df_iv, "../output/iv.csv", row.names = FALSE, na = "")
+```
+
+# Recursive Feature Elimination (RFE)
+```{r}
+set.seed(231192)
+options(warn=-1)
+
+subsets <- c(20,25,30,35)
+
+ctrl <- rfeControl(functions = rfFuncs,
+                   method = "cv",
+                   repeats = 5,
+                   verbose = FALSE)
+
+train_rfe <- rfe(x=train2[, 2:65], 
+                 y=train2$y,
+                 sizes = subsets,
+                 rfeControl = ctrl)
+
+imp_rfe <- train_rfe$optVariables
+
+rfeImp <- data.frame(rfe_imp = varImp(train_rfe))
+
+rfeImp <- tibble::rownames_to_column(rfeImp, "var")
+rfeImp %>% arrange(desc(Overall)) %>%  head(10)
+write.csv2(rfeImp, "../output/iv_rfe.csv", row.names = FALSE, na = "")
+
+```
+
+# Dalex
+```{r}
+library(DALEX)
+trainIndex <- createDataPartition(train2$y, p =0.7, list= FALSE)
+train_dalex <- train2[trainIndex,]
+valid_dalex <- train2[-trainIndex,]
+```
+
+```{r}
+classif_rf <- train(y~., data = train_dalex %>%  select(-id), method = "rf", ntree = 100, tuneLength = 1)
+classif_xgb <- train(y~.,data = train_dalex %>% select(-id), method = "xgbTree")
+
+```
+
+```{r}
+p_fun <- function(object, newdata){predict(object, newdata=newdata, type="prob")[,2]}
+yTest <- as.numeric(as.character(valid_dalex$y))
+
+explainer_classif_rf <- DALEX::explain(classif_rf, label = "rf", 
+                                        data = valid_dalex, y = yTest,
+                                        predict_function = p_fun,
+                                        verbose = FALSE)
+
+explainer_classif_xgb <- DALEX::explain(classif_xgb, label = "xgb", 
+                                        data = valid_dalex, y = yTest,
+                                        predict_function = p_fun,
+                                        verbose = FALSE)
+```
+
+Model Performance
+```{r}
+
+mp_classif_rf <- model_performance(explainer_classif_rf)
+mp_classif_xgb <- model_performance(explainer_classif_xgb)
+plot(mp_classif_rf, mp_classif_xgb)
+```
+Variable Importance
+```{r}
+vi_classif_rf <- model_parts(explainer_classif_rf, loss_function = loss_root_mean_square)
+
+vi_classif_xgb <- model_parts(explainer_classif_xgb, loss_function = loss_root_mean_square)
+
+vi_classif_rf <-  vi_classif_rf %>% 
+  group_by(variable) %>% 
+  summarise(iv_dalex_rf = max(dropout_loss))
+
+write.csv2(vi_classif_rf, "../output/iv_dalex_rfe.csv", row.names = FALSE, na = "")
+
+vi_classif_xgb <-  vi_classif_xgb %>% 
+  group_by(variable) %>% 
+  summarise(iv_dalex_xgb = max(dropout_loss))
+
+write.csv2(vi_classif_xgb, "../output/iv_dalex_xgb.csv", row.names = FALSE, na = "")
+vi_classif_xgb %>% arrange(desc(dropout_loss)) %>%  head()
+```
+
+# Final
+```{r}
+imp_boruta <- read.csv2("../output/iv2_boruta.csv")
+rangerImp <- read.csv2("../output/iv_ranger.csv")
+rfeImp <- read.csv2("../output/iv_rfe.csv")
+```
+
+```{r}
+feature_selection <- imp_boruta %>% 
+  filter(var != 'id') %>% 
+  transmute(var,
+            boruta_imp = meanImp, 
+            decision_boruta = decision) %>% 
+  left_join(df_iv, by = "var") %>% 
+  left_join(rangerImp, by = "var") %>% 
+  left_join(rfeImp, by= "var") %>% 
+  rename(rfe_imp = Overall) %>% 
+  left_join(vi_classif_rf, by= c("var" = "variable")) %>% 
+  left_join(vi_classif_xgb, by= c("var" = "variable"))
+```
+
+```{r}
+feature_selection <- feature_selection %>% 
+  arrange(desc(boruta_imp)) %>% 
+  mutate(ranking_boruta = row_number()) %>% 
+  arrange(desc(iv)) %>% 
+  mutate(ranking_iv = row_number()) %>% 
+  arrange(desc(rfe_imp)) %>% 
+  mutate(ranking_rfe = row_number()) %>% 
+  arrange(desc(iv_dalex_rf)) %>% 
+  mutate(ranking_dalex_rf = row_number()) %>% 
+  arrange(desc(iv_dalex_xgb)) %>% 
+  mutate(ranking_dalex_xgb = row_number()) %>% 
+  arrange(var) %>% 
+  mutate(ranking = ranking_boruta + ranking_iv + ranking_rfe + ranking_dalex_rf + ranking_dalex_xgb)
+
+write.csv2(feature_selection, "../output/feature_selection.csv", row.names = FALSE, na = "")
+```
+

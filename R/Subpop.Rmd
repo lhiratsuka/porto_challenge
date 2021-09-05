@@ -1,0 +1,59 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(visdat)
+```
+
+# Importa
+```{r}
+train <- read.csv("data/train.csv")
+test <- read.csv("data/test.csv")
+```
+
+# Prep
+```{r}
+train <- test %>% mutate_all(~ifelse(.x == -999, NA_real_, .x))
+test <- test %>% mutate_all(~ifelse(.x == -999, NA_real_, .x))
+
+colSums(is.na(train))
+```
+
+# Missing
+```{r}
+
+
+vars_missing <- colnames(train[colSums(is.na(train)) > 0])
+vis_miss(train[,vars_missing])
+```
+
+# Separa em subpop
+## Cria contador de missings
+```{r}
+flag_na <- train %>% 
+  mutate_at(c(2:69), ~if_else(is.na(.), 1, 0))
+
+flag_na$count_na <- rowSums( flag_na[,2:69])
+
+df_na <-  flag_na %>% 
+  transmute(id,
+         count_na)
+df_na %>% 
+  group_by(count_na) %>% 
+  count()
+
+ggplot(df_na, aes(x = count_na)) +
+  geom_bar()
+```
+## Cria subpo
+```{r}
+train <- train %>% 
+  left_join(df_na, by = "id") %>% 
+  filter(count_na)
+  
+```
+
+
